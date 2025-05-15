@@ -1,0 +1,40 @@
+# Premake-generated build files
+/build/
+Makefile
+premake5
+*.make
+*.workspace
+
+# Build artifacts
+/bin/
+bin-int/
+*.obj
+*.o
+*.so
+*.dll
+*.lib
+*.a
+*.exp
+*.pdb
+
+# Executables
+*.exe
+*.out
+
+# VS Code settings
+.vscode/
+
+# Visual Studio
+*.sln
+*.vcxproj*
+*.filters
+*.user
+
+# macOS and Linux system files
+.DS_Store
+*.swp
+*.swo
+
+# Debugging files
+*.log
+*.dmp

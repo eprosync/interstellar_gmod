@@ -1,0 +1,3 @@
+[submodule "interstellar"]
+	path = interstellar
+	url = https://github.com/eprosync/interstellar.git
