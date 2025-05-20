@@ -97,8 +97,11 @@ CLuaInterface* __fastcall CreateLuaInterface_h(CLuaShared* self, unsigned char t
             break;
     };
 
-    Reflection::push(L);
-    API::lua::pop(L);
+    // Do note:
+    // At this stage lua hasn't correctly initialized (missing some openlibs and stuff)
+    // So you can't just grab things like the global table just yet, it isn't ready till luaopen_base is called.
+    // If you need the API in the client-state, but you are in menu-state, just do L:api() L:pop(), this will create everything.
+    // Be warned, exposing API's onto a state thats not entirely under your control leaves you open to high security risks.
 
     return state;
 }
