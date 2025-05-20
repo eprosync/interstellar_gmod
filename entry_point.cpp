@@ -70,6 +70,7 @@ using namespace Interstellar::API;
 // Usually only needed for CLIENT realm.
 typedef GarrysMod::Lua::ILuaInterface CLuaInterface;
 typedef GarrysMod::Lua::ILuaShared CLuaShared;
+typedef GarrysMod::Lua::lua_State GState;
 
 #ifdef __linux
 typedef CLuaInterface* (*CreateLuaInterface_fn)(CLuaShared* self, unsigned char type, bool renew);
@@ -125,6 +126,7 @@ void __fastcall CloseLuaInterface_h(CLuaShared* self, CLuaInterface* state)
 int runtime_async(API::lua_State* L) {
     IOT::runtime();
     LXZ::runtime();
+    FS::runtime();
     return 0;
 }
 
@@ -217,6 +219,34 @@ int module_open() {
     Interstellar::LXZ::api();
     Interstellar::IOT::api();
     Interstellar::Sodium::api();
+
+    Interstellar::FS::add_error("entry_point", [](API::lua_State* L, std::string error) {
+        CLuaInterface* LUA = (CLuaInterface*)((GState*)L)->luabase;
+        if (!LUA) {
+            // TODO: support errors of unique states
+            return;
+        }
+        LUA->ErrorNoHalt((error + "\n").c_str());
+    });
+
+    Interstellar::LXZ::add_error("entry_point", [](API::lua_State* L, std::string error) {
+        CLuaInterface* LUA = (CLuaInterface*)((GState*)L)->luabase;
+        if (!LUA) {
+            // TODO: support errors of unique states
+            return;
+        }
+        LUA->ErrorNoHalt((error + "\n").c_str());
+    });
+
+    Interstellar::IOT::add_error("entry_point", [](API::lua_State* L, std::string type, std::string error) {
+        CLuaInterface* LUA = (CLuaInterface*)((GState*)L)->luabase;
+        if (!LUA) {
+            // TODO: support errors of unique states
+            return;
+        }
+        std::string format = "[" + type + "] " + error + "\n";
+        LUA->ErrorNoHalt(format.c_str());
+    });
 
     #ifdef _WIN32
         DWORD oldProtect;
