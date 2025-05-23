@@ -400,8 +400,8 @@ int module_close() {
             mprotect(reinterpret_cast<void*>(aligned_base), page_size, PROT_READ | PROT_WRITE | PROT_EXEC);
         #endif
 
-        vtable[4] = CreateLuaInterface_o;
-        vtable[5] = CloseLuaInterface_o;
+        vtable[4] = (void*)CreateLuaInterface_o;
+        vtable[5] = (void*)CloseLuaInterface_o;
 
         #ifdef _WIN32
             DWORD __oldProtect;
