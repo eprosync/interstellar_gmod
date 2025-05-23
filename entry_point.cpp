@@ -71,6 +71,8 @@ using namespace Interstellar::API;
 typedef GarrysMod::Lua::ILuaInterface CLuaInterface;
 typedef GarrysMod::Lua::ILuaShared CLuaShared;
 typedef GarrysMod::Lua::lua_State GState;
+CLuaShared* current_shared;
+CLuaInterface* current_interface;
 
 #ifdef __linux
 typedef CLuaInterface* (*CreateLuaInterface_fn)(CLuaShared* self, unsigned char type, bool renew);
@@ -108,15 +110,17 @@ CLuaInterface* __fastcall CreateLuaInterface_h(CLuaShared* self, unsigned char t
 }
 
 #ifdef __linux
-typedef CLuaInterface* (*CloseLuaInterface_fn)(CLuaShared* self, CLuaInterface* state);
+typedef void (*CloseLuaInterface_fn)(CLuaShared* self, CLuaInterface* state);
 CloseLuaInterface_fn CloseLuaInterface_o;
 void CloseLuaInterface_h(CLuaShared* self, CLuaInterface* state)
 #else
-typedef CLuaInterface* (__thiscall* CloseLuaInterface_fn)(CLuaShared* self, CLuaInterface* state);
+typedef void (__thiscall* CloseLuaInterface_fn)(CLuaShared* self, CLuaInterface* state);
 CloseLuaInterface_fn CloseLuaInterface_o;
 void __fastcall CloseLuaInterface_h(CLuaShared* self, CLuaInterface* state)
 #endif
 {
+    if (current_interface == state)
+        return CloseLuaInterface_o(self, state);
     API::lua_State* L = (API::lua_State*)state->GetState();
     Tracker::pre_remove(L);
     CloseLuaInterface_o(self, state);
@@ -148,7 +152,7 @@ int runtime_async(API::lua_State* L) {
 
 bool opened = false;
 int module_open() {
-    if (opened) return 0;
+    if (opened) return 1;
     opened = true;
 
     std::cout << "Interstellar - ";
@@ -189,9 +193,10 @@ int module_open() {
 
     if (!shared) {
         std::cout << "[ERROR] Interstellar couldn't initialize properly, couldn't find lua_shared/interface." << std::endl;
-        return 1;
+        return 0;
     }
 
+    current_shared = shared;
     auto vtable = Interface::VTable(shared);
     int errors = Interstellar::init(binary);
 
@@ -248,27 +253,6 @@ int module_open() {
         LUA->ErrorNoHalt(format.c_str());
     });
 
-    #ifdef _WIN32
-        DWORD oldProtect;
-        VirtualProtect(vtable, sizeof(void*) * 6, PAGE_EXECUTE_READWRITE, &oldProtect);
-    #elif __linux
-        size_t page_size = sysconf(_SC_PAGE_SIZE);
-        uintptr_t base = reinterpret_cast<uintptr_t>(vtable);
-        uintptr_t aligned_base = base & ~(page_size - 1);
-        mprotect(reinterpret_cast<void*>(aligned_base), page_size, PROT_READ | PROT_WRITE | PROT_EXEC);
-    #endif
-
-    CreateLuaInterface_o = (CreateLuaInterface_fn)vtable[4];
-    vtable[4] = (void*)CreateLuaInterface_h;
-    CloseLuaInterface_o = (CloseLuaInterface_fn)vtable[5];
-    vtable[5] = (void*)CloseLuaInterface_h;
-
-    #ifdef _WIN32
-        VirtualProtect(vtable, sizeof(void*) * 6, oldProtect, &oldProtect);
-    #elif __linux
-        mprotect(reinterpret_cast<void*>(aligned_base), page_size, PROT_READ | PROT_EXEC);
-    #endif
-
     #ifdef GMSV
         CLuaInterface* lua_interface = shared->GetLuaInterface(GarrysMod::Lua::State::SERVER);
         Interstellar::API::lua_State* L;
@@ -281,13 +265,14 @@ int module_open() {
 
             if (!lua_interface) {
                 std::cout << "[ERROR] Interstellar couldn't initialize properly, couldn't find GMSV lua_State." << std::endl;
-                return 1;
+                return 0;
             }
 
             L = (Interstellar::API::lua_State*)lua_interface->GetState();
             Interstellar::Tracker::listen(L, "menu", true);
         }
 
+        current_interface = lua_interface;
         Interstellar::Reflection::push(L);
         Interstellar::API::lua::pop(L);
     #elif defined(GMCL)
@@ -295,13 +280,40 @@ int module_open() {
 
         if (!lua_interface) {
             std::cout << "[ERROR] Interstellar couldn't initialize properly, couldn't find GMCL lua_State." << std::endl;
-            return 1;
+            return 0;
         }
 
+        current_interface = lua_interface;
         Interstellar::API::lua_State* L = (Interstellar::API::lua_State*)lua_interface->GetState();
         Interstellar::Tracker::listen(L, "client", true);
         Interstellar::Reflection::push(L);
         Interstellar::API::lua::pop(L);
+    #endif
+    
+    #ifndef GMCL
+        if (shared->GetLuaInterface(GarrysMod::Lua::State::MENU)) {
+            #ifdef _WIN32
+                DWORD oldProtect;
+                VirtualProtect(vtable, sizeof(void*) * 6, PAGE_EXECUTE_READWRITE, &oldProtect);
+            #elif __linux
+                size_t page_size = sysconf(_SC_PAGE_SIZE);
+                uintptr_t base = reinterpret_cast<uintptr_t>(vtable);
+                uintptr_t aligned_base = base & ~(page_size - 1);
+                mprotect(reinterpret_cast<void*>(aligned_base), page_size, PROT_READ | PROT_WRITE | PROT_EXEC);
+            #endif
+    
+            CreateLuaInterface_o = (CreateLuaInterface_fn)vtable[4];
+            vtable[4] = (void*)CreateLuaInterface_h;
+            CloseLuaInterface_o = (CloseLuaInterface_fn)vtable[5];
+            vtable[5] = (void*)CloseLuaInterface_h;
+
+            #ifdef _WIN32
+                DWORD __oldProtect;
+                VirtualProtect(vtable, sizeof(void*) * 6, oldProtect, &__oldProtect);
+            #elif __linux
+                mprotect(reinterpret_cast<void*>(aligned_base), page_size, PROT_READ | PROT_EXEC);
+            #endif
+        }
     #endif
 
     lua::pushvalue(L, indexer::global);
@@ -314,14 +326,14 @@ int module_open() {
         if (!lua::istable(L, -1)) {
             lua::pop(L, 2);
             std::cout << "[ERROR] Interstellar couldn't initialize properly, timer.Create is missing." << std::endl;
-            return 1;
+            return 0;
         }
 
         lua::getfield(L, -1, "Create");
         if (!lua::isfunction(L, -1)) {
             lua::pop(L, 3);
             std::cout << "[ERROR] Interstellar couldn't initialize properly, timer.Create is missing." << std::endl;
-            return 1;
+            return 0;
         }
 
         lua::pushstring(L, "__interstellar");
@@ -363,45 +375,41 @@ int module_open() {
         lua::pop(L, 2);*/
     }
 
-    return 0;
+    return 1;
 }
 
 int module_close() {
-    if (!opened) return 0;
+    if (!opened) return 1;
     opened = false;
-
-    #ifdef BINARY2
-    auto shared = Interface::Interface<CLuaShared*>(BINARY2, "LUASHARED003");
-    if (!shared) auto shared = Interface::Interface<CLuaShared*>(BINARY, "LUASHARED003");
-    #else
-    auto shared = Interface::Interface<CLuaShared*>(BINARY, "LUASHARED003");
-    #endif
     
-    if (!shared) {
+    if (!current_shared) {
         std::cout << "[ERROR] Interstellar couldn't destruct properly, couldn't find lua_shared/interface." << std::endl;
         return 1;
     }
 
-    auto vtable = Interface::VTable(shared);
+    auto vtable = Interface::VTable(current_shared);
 
-    #ifdef _WIN32
-        DWORD oldProtect;
-        VirtualProtect(vtable, sizeof(void*) * 6, PAGE_EXECUTE_READWRITE, &oldProtect);
-    #elif __linux
-        size_t page_size = sysconf(_SC_PAGE_SIZE);
-        uintptr_t base = reinterpret_cast<uintptr_t>(vtable);
-        uintptr_t aligned_base = base & ~(page_size - 1);
-        mprotect(reinterpret_cast<void*>(aligned_base), page_size, PROT_READ | PROT_WRITE | PROT_EXEC);
-    #endif
+    if (CreateLuaInterface_o && CloseLuaInterface_o) {
+        #ifdef _WIN32
+            DWORD oldProtect;
+            VirtualProtect(vtable, sizeof(void*) * 6, PAGE_EXECUTE_READWRITE, &oldProtect);
+        #elif __linux
+            size_t page_size = sysconf(_SC_PAGE_SIZE);
+            uintptr_t base = reinterpret_cast<uintptr_t>(vtable);
+            uintptr_t aligned_base = base & ~(page_size - 1);
+            mprotect(reinterpret_cast<void*>(aligned_base), page_size, PROT_READ | PROT_WRITE | PROT_EXEC);
+        #endif
 
-    vtable[4] = (void*)CreateLuaInterface_o;
-    vtable[5] = (void*)CloseLuaInterface_o;
+        vtable[4] = CreateLuaInterface_o;
+        vtable[5] = CloseLuaInterface_o;
 
-    #ifdef _WIN32
-        VirtualProtect(vtable, sizeof(void*) * 6, oldProtect, &oldProtect);
-    #elif __linux
-        mprotect(reinterpret_cast<void*>(aligned_base), page_size, PROT_READ | PROT_EXEC);
-    #endif
+        #ifdef _WIN32
+            DWORD __oldProtect;
+            VirtualProtect(vtable, sizeof(void*) * 6, oldProtect, &__oldProtect);
+        #elif __linux
+            mprotect(reinterpret_cast<void*>(aligned_base), page_size, PROT_READ | PROT_EXEC);
+        #endif
+    }
 
     auto list = Tracker::all();
     for (auto& state : list) {
@@ -409,7 +417,7 @@ int module_close() {
         Tracker::post_remove(state.second);
     }
 
-    return 0;
+    return 1;
 }
 
 // Used for testing with injections
