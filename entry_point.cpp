@@ -12,6 +12,7 @@
 #include "gmod/LuaShared.h"
 #include "gmod/LuaInterface.h"
 #include "interstellar/interstellar.hpp"
+#include "interstellar/interstellar_signal.hpp"
 #include "interstellar/interstellar_fs.hpp"
 #include "interstellar/interstellar_memory.hpp"
 #include "interstellar/interstellar_lxz.hpp"
@@ -226,34 +227,6 @@ int module_open() {
     Interstellar::IOT::api();
     Interstellar::Sodium::api();
 
-    Interstellar::FS::add_error("entry_point", [](API::lua_State* L, std::string error) {
-        CLuaInterface* LUA = (CLuaInterface*)((GState*)L)->luabase;
-        if (!LUA) {
-            // TODO: support errors of unique states
-            return;
-        }
-        LUA->ErrorNoHalt((error + "\n").c_str());
-    });
-
-    Interstellar::LXZ::add_error("entry_point", [](API::lua_State* L, std::string error) {
-        CLuaInterface* LUA = (CLuaInterface*)((GState*)L)->luabase;
-        if (!LUA) {
-            // TODO: support errors of unique states
-            return;
-        }
-        LUA->ErrorNoHalt((error + "\n").c_str());
-    });
-
-    Interstellar::IOT::add_error("entry_point", [](API::lua_State* L, std::string type, std::string error) {
-        CLuaInterface* LUA = (CLuaInterface*)((GState*)L)->luabase;
-        if (!LUA) {
-            // TODO: support errors of unique states
-            return;
-        }
-        std::string format = "[" + type + "] " + error + "\n";
-        LUA->ErrorNoHalt(format.c_str());
-    });
-
     #ifdef GMSV
         CLuaInterface* lua_interface = shared->GetLuaInterface(GarrysMod::Lua::State::SERVER);
         Interstellar::API::lua_State* L;
@@ -290,6 +263,26 @@ int module_open() {
         Interstellar::Reflection::push(L);
         Interstellar::API::lua::pop(L);
     #endif
+
+    Interstellar::Signal::add_error("entry_point", [](API::lua_State* L, std::string name, std::string identity, std::string error) {
+        std::string state_name = Tracker::get_name(L);
+        std::cout << "[" << state_name << "] [signal." << name << "." << identity << "] " << error << std::endl;
+    });
+
+    Interstellar::FS::add_error("entry_point", [](API::lua_State* L, std::string error) {
+        std::string state_name = Tracker::get_name(L);
+        std::cout << "[" << state_name << "] [fs] " << error << std::endl;
+    });
+
+    Interstellar::LXZ::add_error("entry_point", [](API::lua_State* L, std::string error) {
+        std::string state_name = Tracker::get_name(L);
+        std::cout << "[" << state_name << "] [lxz] " << error << std::endl;
+    });
+
+    Interstellar::IOT::add_error("entry_point", [](API::lua_State* L, std::string type, std::string error) {
+        std::string state_name = Tracker::get_name(L);
+        std::cout << "[" << state_name << "] [iot." << type << "] " << error << std::endl;
+    });
     
     #ifndef GMCL
         if (shared->GetLuaInterface(GarrysMod::Lua::State::MENU)) {
