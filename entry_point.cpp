@@ -128,6 +128,7 @@ void __fastcall CloseLuaInterface_h(CLuaShared* self, CLuaInterface* state)
 }
 
 int runtime_async(API::lua_State* L) {
+    Tracker::runtime();
     IOT::runtime();
     LXZ::runtime();
     FS::runtime();
@@ -411,7 +412,7 @@ int module_close() {
         #endif
     }
 
-    auto list = Tracker::all();
+    auto list = Tracker::get_states();
     for (auto& state : list) {
         Tracker::pre_remove(state.second);
         Tracker::post_remove(state.second);
