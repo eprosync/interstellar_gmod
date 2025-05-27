@@ -65,7 +65,6 @@ namespace Interface {
 }
 
 using namespace Interstellar;
-using namespace Interstellar::API;
 
 // These are overrides so we can keep track of lua_State creation.
 // Usually only needed for CLIENT realm.
@@ -134,6 +133,32 @@ int runtime_async(API::lua_State* L) {
     LXZ::runtime();
     FS::runtime();
     return 0;
+}
+
+API::luaL::type::newstate o_new_state;
+API::lua_State* new_state() {
+    // TODO: Should rebuild sections before/after CreateLuaInterface is invoked.
+    API::lua_State* L = o_new_state();
+    CLuaInterface* linterface = current_shared->CreateLuaInterface(3, false);
+    linterface->SetState(L);
+    ((GState*)L)->luabase = linterface;
+    return L;
+}
+
+API::lua::type::close o_close_state;
+void close_state(API::lua_State* L) {
+    if (Tracker::is_internal(L)) return;
+    CLuaInterface* linterface = (CLuaInterface*)((GState*)L)->luabase;
+    current_shared->CloseLuaInterface(linterface);
+    o_close_state(L);
+}
+
+void on_opening(API::lua_State* L) {
+    if (Tracker::is_internal(L)) return;
+}
+
+void on_closing(API::lua_State* L) {
+    if (Tracker::is_internal(L)) return;
 }
 
 #ifdef __linux
@@ -284,6 +309,15 @@ int module_open() {
         std::cout << "[" << state_name << "] [iot." << type << "] " << error << std::endl;
     });
     
+    Tracker::on_open("entry_point", on_opening);
+    Tracker::on_close("entry_point", on_closing);
+
+    // TODO: Fix lua interface creation later on...
+    //o_new_state = API::luaL::newstate;
+    //API::luaL::newstate = new_state;
+    //o_close_state = API::lua::close;
+    //API::lua::close = close_state;
+    
     #ifndef GMCL
         if (shared->GetLuaInterface(GarrysMod::Lua::State::MENU)) {
             #ifdef _WIN32
@@ -310,6 +344,7 @@ int module_open() {
         }
     #endif
 
+    using namespace API;
     lua::pushvalue(L, indexer::global);
 
     // This is what allows some task scheduled or parallelism to exist

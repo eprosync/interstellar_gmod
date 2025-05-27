@@ -281,7 +281,7 @@ namespace GarrysMod
 
             // Sets the lua_State to be used by the ILuaBase implementation
             // You don't need to use this if you use the LUA_FUNCTION macro
-            virtual void        SetState( lua_State* L ) = 0;
+            virtual void        SetState( void* L ) = 0;
 
             // Pushes the metatable associated with the given type name
             // Returns the type ID to use for this type
