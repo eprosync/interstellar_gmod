@@ -128,8 +128,7 @@ void __fastcall CloseLuaInterface_h(CLuaShared* self, CLuaInterface* state)
 }
 
 int runtime_async(API::lua_State* L) {
-    Tracker::runtime();
-    Reflection::runtime();
+    Interstellar::runtime();
     return 0;
 }
 
