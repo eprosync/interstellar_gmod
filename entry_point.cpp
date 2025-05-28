@@ -129,9 +129,7 @@ void __fastcall CloseLuaInterface_h(CLuaShared* self, CLuaInterface* state)
 
 int runtime_async(API::lua_State* L) {
     Tracker::runtime();
-    IOT::runtime();
-    LXZ::runtime();
-    FS::runtime();
+    Reflection::runtime();
     return 0;
 }
 
@@ -442,7 +440,9 @@ int module_close() {
 
     auto list = Tracker::get_states();
     for (auto& state : list) {
+        bool is_created = !Tracker::is_internal(state.second);
         Tracker::pre_remove(state.second);
+        if (is_created) Reflection::close(state.second);
         Tracker::post_remove(state.second);
     }
 
