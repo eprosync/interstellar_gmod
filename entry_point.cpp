@@ -291,6 +291,11 @@ int module_open() {
         std::cout << "[" << state_name << "] [signal." << name << "." << identity << "] " << error << std::endl;
     });
 
+    Interstellar::Reflection::Task::add_error("entry_point", [](API::lua_State* L, std::string error) {
+        std::string state_name = Tracker::get_name(L);
+        std::cout << "[" << state_name << "] [task] " << error << std::endl;
+    });
+
     Interstellar::FS::add_error("entry_point", [](API::lua_State* L, std::string error) {
         std::string state_name = Tracker::get_name(L);
         std::cout << "[" << state_name << "] [fs] " << error << std::endl;
