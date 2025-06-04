@@ -234,7 +234,7 @@ int module_open() {
         "bin", "linux32", "linux64", "win32", "win64"
     };
 
-    std::filesystem::path path = Interstellar::FS::get_root();
+    std::filesystem::path path = Interstellar::FS::where();
     if (path.filename().string() == "bin") {
         path = path.parent_path();
     }
