@@ -1,11 +1,3 @@
-#include <cstdint>
-#include <cstring>
-#include <iostream>
-#include <string>
-#include <vector>
-#include <memory>
-#include <stdio.h>
-
 #define NOMINMAX
 #if defined(_WIN32)
 #include <windows.h>
@@ -14,20 +6,21 @@
 #include <sys/mman.h>
 #endif
 
-#pragma comment (lib, "../luajit/src/lua51.lib")
-#include "luajit/src/lua.hpp"
+#include <unordered_set>
+#include <iostream>
+#include "gmod/Interface.h"
+#include "gmod/LuaShared.h"
+#include "gmod/LuaInterface.h"
+#include "interstellar/interstellar.hpp"
+#include "interstellar/interstellar_signal.hpp"
+#include "interstellar/interstellar_fs.hpp"
+#include "interstellar/interstellar_memory.hpp"
+#include "interstellar/interstellar_lxz.hpp"
+#include "interstellar/interstellar_iot.hpp"
+#include "interstellar/interstellar_sodium.hpp"
 
-#pragma comment (lib, "PolyHook_2.lib")
-#include "polyhook2/Detour/x64Detour.hpp"
-#include "polyhook2/Detour/x86Detour.hpp"
-
-#pragma comment (lib, "tier0.lib")
-#pragma comment (lib, "tier1.lib")
-#include "eiface.h"
-#include "tier1/interface.h"
-#include "engine/iserverplugin.h"
-
-namespace Framework {
+// This is just to grab the interfaces from the game engine
+namespace Interface {
     typedef void* (*CreateInterface_fn)(const char* name, int* returncode);
 
     void** VTable(void* instance)
@@ -39,7 +32,8 @@ namespace Framework {
     T Interface(std::string module, std::string name)
     {
         #if defined(_WIN32)
-            HMODULE handle = GetModuleHandle(module.c_str());
+            std::wstring stemp = std::wstring(module.begin(), module.end());
+            HMODULE handle = GetModuleHandle(stemp.c_str());
 
             if (!handle)
                 return nullptr;
@@ -68,241 +62,124 @@ namespace Framework {
             return result;
         #endif
     }
+}
 
-    #ifdef __linux
-        #define UMODULE void*
-        static UMODULE mopen(const char* name)
-        {
-            return dlopen(name, RTLD_LAZY);
-        }
+using namespace Interstellar;
 
-        static void* n2p(UMODULE hndle, const char* name)
-        {
-            return dlsym(hndle, name);
-        }
-    #else
-        #define UMODULE HMODULE
-        static UMODULE mopen(const char* name)
-        {
-            return GetModuleHandleA(name);
-        }
+// These are overrides so we can keep track of lua_State creation.
+// Usually only needed for CLIENT realm.
+typedef GarrysMod::Lua::ILuaInterface CLuaInterface;
+typedef GarrysMod::Lua::ILuaShared CLuaShared;
+typedef GarrysMod::Lua::lua_State GState;
+CLuaShared* current_shared;
+CLuaInterface* current_interface;
 
-        static void* n2p(UMODULE hndle, const char* name)
-        {
-            return GetProcAddress(hndle, name);
-        }
-    #endif
+#ifdef __linux
+typedef CLuaInterface* (*CreateLuaInterface_fn)(CLuaShared* self, unsigned char type, bool renew);
+CreateLuaInterface_fn CreateLuaInterface_o;
+CLuaInterface* CreateLuaInterface_h(CLuaShared* self, unsigned char type, bool renew)
+#else
+typedef CLuaInterface* (__thiscall* CreateLuaInterface_fn)(CLuaShared* self, unsigned char type, bool renew);
+CreateLuaInterface_fn CreateLuaInterface_o;
+CLuaInterface* __fastcall CreateLuaInterface_h(CLuaShared* self, unsigned char type, bool renew)
+#endif
+{
+    CLuaInterface* state = CreateLuaInterface_o(self, type, renew);
+    API::lua_State* L = (API::lua_State*)state->GetState();
 
+    switch (type)
+    {
+        case GarrysMod::Lua::State::CLIENT:
+            Tracker::listen(L, "client", true);
+            break;
+        case GarrysMod::Lua::State::SERVER:
+            Tracker::listen(L, "server", true);
+            break;
+        case GarrysMod::Lua::State::MENU:
+            Tracker::listen(L, "menu", true);
+            break;
+    };
+
+    // Do note:
+    // At this stage lua hasn't correctly initialized (missing some openlibs and stuff)
+    // So you can't just grab things like the global table just yet, it isn't ready till luaopen_base is called.
+    // If you need the API in the client-state, but you are in menu-state, just do L:api() L:pop(), this will create everything.
+    // Be warned, exposing API's onto a state thats not entirely under your control leaves you open to high security risks.
+
+    return state;
+}
+
+#ifdef __linux
+typedef void (*CloseLuaInterface_fn)(CLuaShared* self, CLuaInterface* state);
+CloseLuaInterface_fn CloseLuaInterface_o;
+void CloseLuaInterface_h(CLuaShared* self, CLuaInterface* state)
+#else
+typedef void (__thiscall* CloseLuaInterface_fn)(CLuaShared* self, CLuaInterface* state);
+CloseLuaInterface_fn CloseLuaInterface_o;
+void __fastcall CloseLuaInterface_h(CLuaShared* self, CLuaInterface* state)
+#endif
+{
+    if (current_interface == state)
+        return CloseLuaInterface_o(self, state);
+    API::lua_State* L = (API::lua_State*)state->GetState();
+    Tracker::pre_remove(L);
+    CloseLuaInterface_o(self, state);
+    Tracker::post_remove(L);
+}
+
+int runtime_async(API::lua_State* L) {
+    Interstellar::runtime();
+    return 0;
+}
+
+API::luaL::type::newstate o_new_state;
+API::lua_State* new_state() {
+    // TODO: Should rebuild sections before/after CreateLuaInterface is invoked.
+    API::lua_State* L = o_new_state();
+    CLuaInterface* linterface = current_shared->CreateLuaInterface(3, false);
+    linterface->SetState(L);
+    ((GState*)L)->luabase = linterface;
+    return L;
+}
+
+API::lua::type::close o_close_state;
+void close_state(API::lua_State* L) {
+    if (Tracker::is_internal(L)) return;
+    CLuaInterface* linterface = (CLuaInterface*)((GState*)L)->luabase;
+    current_shared->CloseLuaInterface(linterface);
+    o_close_state(L);
+}
+
+void on_opening(API::lua_State* L) {
+    if (Tracker::is_internal(L)) return;
+}
+
+void on_closing(API::lua_State* L) {
+    if (Tracker::is_internal(L)) return;
+}
+
+#ifdef __linux
     #if defined(__x86_64__) || defined(_M_X64)
-        std::vector<PLH::x64Detour*>& get_tracking() {
-            static std::vector<PLH::x64Detour*> tracking;
-            return tracking;
-        }
+        #define BINARY "bin/linux64/lua_shared.so"
     #elif defined(__i386__) || defined(_M_IX86)
-        std::vector<PLH::x86Detour*>& get_tracking() {
-            static std::vector<PLH::x86Detour*> tracking;
-            return tracking;
-        }
+        #define BINARY "bin/linux32/lua_shared.so"
+        #define BINARY2 "garrysmod/bin/lua_shared_srv.so"
     #endif
-
-    bool override(void* target, void* hook) {
-        static void* nothing = nullptr;
-
-        #if defined(__x86_64__) || defined(_M_X64)
-            auto detour = new PLH::x64Detour(
-                (uint64_t)target,
-                (uint64_t)hook,
-                (uint64_t*)&nothing
-            );
-        #elif defined(__i386__) || defined(_M_IX86)
-            auto detour = new PLH::x86Detour(
-                (uint64_t)target,
-                (uint64_t)hook,
-                (uint64_t*)&nothing
-            );
-        #endif
-
-        if (!detour->hook()) {
-            detour->unHook();
-            return false;
-        }
-
-        get_tracking().push_back(detour);
-        nothing = nullptr;
-
-        return true;
-    }
-
-    void unload() {
-        auto& list = get_tracking();
-        for (auto& entry : list) {
-            entry->unHook();
-        }
-        list.clear();
-    }
-}
-
-class LJPatchPlugin : public IServerPluginCallbacks
-{
-public:
-    LJPatchPlugin();
-    ~LJPatchPlugin();
-
-    // IServerPluginCallbacks methods
-    virtual bool			Load(CreateInterfaceFn interfaceFactory, CreateInterfaceFn gameServerFactory);
-    virtual void			Unload(void);
-    virtual void			Pause(void);
-    virtual void			UnPause(void);
-    virtual const char* GetPluginDescription(void);
-    virtual void			LevelInit(char const* pMapName);
-    virtual void			ServerActivate(edict_t* pEdictList, int edictCount, int clientMax);
-    virtual void			GameFrame(bool simulating);
-    virtual void			LevelShutdown(void);
-    virtual void			ClientActive(edict_t* pEntity);
-    virtual void			ClientDisconnect(edict_t* pEntity);
-    virtual void			ClientPutInServer(edict_t* pEntity, char const* playername);
-    virtual void			SetCommandClient(int index);
-    virtual void			ClientSettingsChanged(edict_t* pEdict);
-    virtual PLUGIN_RESULT	ClientConnect(bool* bAllowConnect, edict_t* pEntity, const char* pszName, const char* pszAddress, char* reject, int maxrejectlen);
-    virtual PLUGIN_RESULT	ClientCommand(edict_t* pEntity, const CCommand& args);
-    virtual PLUGIN_RESULT	NetworkIDValidated(const char* pszUserName, const char* pszNetworkID);
-    virtual void			OnQueryCvarValueFinished(QueryCvarCookie_t iCookie, edict_t* pPlayerEntity, EQueryCvarValueStatus eStatus, const char* pCvarName, const char* pCvarValue);
-    virtual void			OnEdictAllocated(edict_t* edict);
-    virtual void			OnEdictFreed(const edict_t* edict);
-private:
-};
-
-//---------------------------------------------------------------------------------
-// Purpose: constructor/destructor
-//---------------------------------------------------------------------------------
-LJPatchPlugin::LJPatchPlugin()
-{
-}
-
-LJPatchPlugin::~LJPatchPlugin()
-{
-}
-
-//---------------------------------------------------------------------------------
-// Purpose: called when the plugin is loaded, load the interface we need from the engine
-//---------------------------------------------------------------------------------
-
-#include "glua/Interface.h"
-#include "glua/LuaInterface.h"
-#include "glua/LuaShared.h"
-GarrysMod::Lua::ILuaShared* lua_shared_interface;
-
-// For some reason GetTypeName and type don't use the same alpha-cases
-static const char* type_mapping[] = {
-    "none",
-    "nil",
-    "bool",
-    "lightuserdata",
-    "number",
-    "string",
-    "table",
-    "function",
-    "UserData",
-    "thread",
-    "Entity",
-    "Vector",
-    "Angle",
-    "PhysObj",
-    "Save",
-    "Restore",
-    "DamageInfo",
-    "EffectData",
-    "MoveData",
-    "RecipientFilter",
-    "UserCmd",
-    "ScriptedVehicle",
-    "Material",
-    "Panel",
-    "Particle",
-    "ParticleEmitter",
-    "Texture",
-    "UserMsg",
-    "ConVar",
-    "IMesh",
-    "Matrix",
-    "Sound",
-    "PixelVisHandle",
-    "DLight",
-    "Video",
-    "File",
-    "Locomotion",
-    "Path",
-    "NavArea",
-    "SoundHandle",
-    "NavLadder",
-    "ParticleSystem",
-    "ProjectedTexture",
-    "PhysCollide",
-    "SurfaceInfo",
-};
-
-// types break since we are restoring luajit
-static int lua_func_type(lua_State* L)
-{
-    GarrysMod::lua_State* gL = (GarrysMod::lua_State*)L;
-    GarrysMod::Lua::CLuaInterface* iL = (GarrysMod::Lua::CLuaInterface*)gL->luabase;
-    int type = iL->GetType(1)+1;
-    const char* type_name = iL->GetTypeName(type-1);
-    if (type < 45) {
-        type_name = type_mapping[type];
-    }
-    lua_pushstring(L, type_name);
-    return 1;
-}
-
-// Exposure of extra libraries to LJ
-void luaL_openlibs_dt(lua_State* L)
-{
-    luaL_openlibs(L);
-
-    lua_pushcfunction(L, luaopen_ffi);
-    lua_pushstring(L, LUA_FFILIBNAME);
-    lua_call(L, 1, 1);
-    lua_setfield(L, LUA_GLOBALSINDEX, LUA_FFILIBNAME);
-
-    lua_getfield(L, LUA_GLOBALSINDEX, "require");
-    lua_setfield(L, LUA_GLOBALSINDEX, "acquire");
-
-    lua_getfield(L, LUA_GLOBALSINDEX, "jit");
-        lua_getfield(L, LUA_GLOBALSINDEX, "require");
-        lua_pushstring(L, "jit.profile");
-        lua_call(L, 1, 1);
-        lua_setfield(L, -2, "profile");
-
-        lua_getfield(L, LUA_GLOBALSINDEX, "require");
-        lua_pushstring(L, "jit.util");
-        lua_call(L, 1, 1);
-        lua_setfield(L, -2, "util");
-    lua_pop(L, 1);
-
-    lua_pushcfunction(L, lua_func_type);
-    lua_setfield(L, LUA_GLOBALSINDEX, "type");
-}
-
-bool LJPatchPlugin::Load(CreateInterfaceFn interfaceFactory, CreateInterfaceFn gameServerFactory)
-{
-    #ifdef __linux
-        #if defined(__x86_64__) || defined(_M_X64)
-            #define BINARY "bin/linux64/lua_shared.so"
-        #elif defined(__i386__) || defined(_M_IX86)
-            #define BINARY "bin/linux32/lua_shared.so"
-            #define BINARY2 "garrysmod/bin/lua_shared_srv.so"
-        #endif
-    #else
-        #if defined(__x86_64__) || defined(_M_X64)
-            #define BINARY "bin/win64/lua_shared.dll"
-        #elif defined(__i386__) || defined(_M_IX86)
-            #define BINARY "bin/lua_shared.dll"
-            #define BINARY2 "garrysmod/bin/lua_shared.dll"
-        #endif
+#else
+    #if defined(__x86_64__) || defined(_M_X64)
+        #define BINARY "bin/win64/lua_shared.dll"
+    #elif defined(__i386__) || defined(_M_IX86)
+        #define BINARY "bin/lua_shared.dll"
+        #define BINARY2 "garrysmod/bin/lua_shared.dll"
     #endif
+#endif
 
-    std::cout << "LJPatch - ";
+bool opened = false;
+int module_open() {
+    if (opened) return 1;
+    opened = true;
+
+    std::cout << "Interstellar - ";
 
     #if defined(_WIN32)
         std::cout << "Windows ";
@@ -311,334 +188,310 @@ bool LJPatchPlugin::Load(CreateInterfaceFn interfaceFactory, CreateInterfaceFn g
     #endif
 
     #if defined(__x86_64__) || defined(_M_X64)
-        std::cout << "x64";
+        std::cout << "x64 ";
     #elif defined(__i386__) || defined(_M_IX86)
-        std::cout << "x86";
+        std::cout << "x86 ";
+    #endif
+
+    #ifdef GMSV
+        std::cout << "Server/Menu";
+    #elif GMCL
+        std::cout << "Client";
     #endif
 
     std::cout << " - " __TIME__ " " __DATE__;
     std::cout << std::endl;
-    std::cout << "Rolling Back LuaJIT & Feature Restoration" << std::endl;
-
-    std::vector<std::pair<std::string, void*>> apis = {
-        { "luaJIT_setmode", (void*)(void*)luaJIT_setmode },
-
-        { "luaopen_base", (void*)luaopen_base },
-        { "luaopen_bit", (void*)luaopen_bit },
-        { "luaopen_debug", (void*)luaopen_debug },
-        { "luaopen_jit", (void*)luaopen_jit },
-        { "luaopen_math", (void*)luaopen_math },
-        { "luaopen_os", (void*)luaopen_os },
-        { "luaopen_package", (void*)luaopen_package },
-        { "luaopen_string", (void*)luaopen_string },
-        { "luaopen_table", (void*)luaopen_table },
-
-        { "luaL_addlstring", (void*)luaL_addlstring },
-        { "luaL_addstring", (void*)luaL_addstring },
-        { "luaL_addvalue", (void*)luaL_addvalue },
-        { "luaL_argerror", (void*)luaL_argerror },
-        { "luaL_buffinit", (void*)luaL_buffinit },
-        { "luaL_callmeta", (void*)luaL_callmeta },
-        { "luaL_checkany", (void*)luaL_checkany },
-        { "luaL_checkinteger", (void*)luaL_checkinteger },
-        { "luaL_checklstring", (void*)luaL_checklstring },
-        { "luaL_checknumber", (void*)luaL_checknumber },
-        { "luaL_checkoption", (void*)luaL_checkoption },
-        { "luaL_checkstack", (void*)luaL_checkstack },
-        { "luaL_checktype", (void*)luaL_checktype },
-        { "luaL_checkudata", (void*)luaL_checkudata },
-        { "luaL_error", (void*)luaL_error },
-        { "luaL_execresult", (void*)luaL_execresult },
-        { "luaL_fileresult", (void*)luaL_fileresult },
-        { "luaL_findtable", (void*)luaL_findtable },
-        { "luaL_getmetafield", (void*)luaL_getmetafield },
-        { "luaL_gsub", (void*)luaL_gsub },
-        { "luaL_loadbuffer", (void*)luaL_loadbuffer },
-        { "luaL_loadbufferx", (void*)luaL_loadbufferx },
-        { "luaL_loadfile", (void*)luaL_loadfile },
-        { "luaL_loadfilex", (void*)luaL_loadfilex },
-        { "luaL_loadstring", (void*)luaL_loadstring },
-        { "luaL_newmetatable", (void*)luaL_newmetatable },
-        { "luaL_newstate", (void*)luaL_newstate },
-        { "luaL_openlib", (void*)luaL_openlib },
-        { "luaL_openlibs", (void*)luaL_openlibs_dt },
-        { "luaL_optinteger", (void*)luaL_optinteger },
-        { "luaL_optlstring", (void*)luaL_optlstring },
-        { "luaL_optnumber", (void*)luaL_optnumber },
-        { "luaL_prepbuffer", (void*)luaL_prepbuffer },
-        { "luaL_pushmodule", (void*)luaL_pushmodule },
-        { "luaL_pushresult", (void*)luaL_pushresult },
-        { "luaL_ref", (void*)luaL_ref },
-        { "luaL_register", (void*)luaL_register },
-        { "luaL_setfuncs", (void*)luaL_setfuncs },
-        { "luaL_setmetatable", (void*)luaL_setmetatable },
-        { "luaL_testudata", (void*)luaL_testudata },
-        { "luaL_traceback", (void*)luaL_traceback },
-        { "luaL_typerror", (void*)luaL_typerror },
-        { "luaL_unref", (void*)luaL_unref },
-        { "luaL_where", (void*)luaL_where },
-
-        { "lua_atpanic", (void*)lua_atpanic },
-        { "lua_call", (void*)lua_call },
-        { "lua_checkstack", (void*)lua_checkstack },
-        { "lua_close", (void*)lua_close },
-        { "lua_concat", (void*)lua_concat },
-        { "lua_copy", (void*)lua_copy },
-        { "lua_cpcall", (void*)lua_cpcall },
-        { "lua_createtable", (void*)lua_createtable },
-        { "lua_dump", (void*)lua_dump },
-        { "lua_equal", (void*)lua_equal },
-        { "lua_error", (void*)lua_error },
-        { "lua_gc", (void*)lua_gc },
-        { "lua_getallocf", (void*)lua_getallocf },
-        { "lua_getfenv", (void*)lua_getfenv },
-        { "lua_getfield", (void*)lua_getfield },
-        { "lua_gethook", (void*)lua_gethook },
-        { "lua_gethookcount", (void*)lua_gethookcount },
-        { "lua_gethookmask", (void*)lua_gethookmask },
-        { "lua_getinfo", (void*)lua_getinfo },
-        { "lua_getlocal", (void*)lua_getlocal },
-        { "lua_getmetatable", (void*)lua_getmetatable },
-        { "lua_getstack", (void*)lua_getstack },
-        { "lua_gettable", (void*)lua_gettable },
-        { "lua_gettop", (void*)lua_gettop },
-        { "lua_getupvalue", (void*)lua_getupvalue },
-        { "lua_insert", (void*)lua_insert },
-        { "lua_iscfunction", (void*)lua_iscfunction },
-        { "lua_isnumber", (void*)lua_isnumber },
-        { "lua_isstring", (void*)lua_isstring },
-        { "lua_isuserdata", (void*)lua_isuserdata },
-        { "lua_isyieldable", (void*)lua_isyieldable },
-        { "lua_lessthan", (void*)lua_lessthan },
-        { "lua_load", (void*)lua_load },
-        { "lua_loadx", (void*)lua_loadx },
-        { "lua_newstate", (void*)lua_newstate },
-        { "lua_newthread", (void*)lua_newthread },
-        { "lua_newuserdata", (void*)lua_newuserdata },
-        { "lua_next", (void*)lua_next },
-        { "lua_objlen", (void*)lua_objlen },
-        { "lua_pcall", (void*)lua_pcall },
-        { "lua_pushboolean", (void*)lua_pushboolean },
-        { "lua_pushcclosure", (void*)lua_pushcclosure },
-        { "lua_pushfstring", (void*)lua_pushfstring },
-        { "lua_pushinteger", (void*)lua_pushinteger },
-        { "lua_pushlightuserdata", (void*)lua_pushlightuserdata },
-        { "lua_pushlstring", (void*)lua_pushlstring },
-        { "lua_pushnil", (void*)lua_pushnil },
-        { "lua_pushnumber", (void*)lua_pushnumber },
-        { "lua_pushstring", (void*)lua_pushstring },
-        { "lua_pushthread", (void*)lua_pushthread },
-        { "lua_pushvalue", (void*)lua_pushvalue },
-        { "lua_pushvfstring", (void*)lua_pushvfstring },
-        { "lua_rawequal", (void*)lua_rawequal },
-        { "lua_rawget", (void*)lua_rawget },
-        { "lua_rawgeti", (void*)lua_rawgeti },
-        { "lua_rawset", (void*)lua_rawset },
-        { "lua_rawseti", (void*)lua_rawseti },
-        { "lua_remove", (void*)lua_remove },
-        { "lua_replace", (void*)lua_replace },
-        { "lua_setallocf", (void*)lua_setallocf },
-        { "lua_setfenv", (void*)lua_setfenv },
-        { "lua_setfield", (void*)lua_setfield },
-        { "lua_sethook", (void*)lua_sethook },
-        { "lua_setlocal", (void*)lua_setlocal },
-        { "lua_setmetatable", (void*)lua_setmetatable },
-        { "lua_settable", (void*)lua_settable },
-        { "lua_settop", (void*)lua_settop },
-        { "lua_setupvalue", (void*)lua_setupvalue },
-        { "lua_status", (void*)lua_status },
-        { "lua_toboolean", (void*)lua_toboolean },
-        { "lua_tocfunction", (void*)lua_tocfunction },
-        { "lua_tointeger", (void*)lua_tointeger },
-        { "lua_tointegerx", (void*)lua_tointegerx },
-        { "lua_tolstring", (void*)lua_tolstring },
-        { "lua_tonumber", (void*)lua_tonumber },
-        { "lua_tonumberx", (void*)lua_tonumberx },
-        { "lua_topointer", (void*)lua_topointer },
-        { "lua_tothread", (void*)lua_tothread },
-        { "lua_touserdata", (void*)lua_touserdata },
-        { "lua_type", (void*)lua_type },
-        { "lua_typename", (void*)lua_typename },
-        { "lua_upvalueid", (void*)lua_upvalueid },
-        { "lua_upvaluejoin", (void*)lua_upvaluejoin },
-        { "lua_version", (void*)lua_version },
-        { "lua_xmove", (void*)lua_xmove },
-        { "lua_yield", (void*)lua_yield }
-    };
+    std::cout << "An interstellar gateway to enhancing the 'RCE' & 'ACE' experience." << std::endl;
 
     #ifdef BINARY2
-        const char* binary = BINARY2;
-        auto lua_shared = Framework::mopen(BINARY2);
-        if (!lua_shared) {
-            binary = BINARY;
-            lua_shared = Framework::mopen(BINARY);
-        }
+    const char* binary = BINARY2;
+    auto shared = Interface::Interface<CLuaShared*>(BINARY2, "LUASHARED003");
+    if (!shared) {
+        binary = BINARY;
+        shared = Interface::Interface<CLuaShared*>(BINARY, "LUASHARED003");
+    }
     #else
-        const char* binary = BINARY;
-        auto lua_shared = Framework::mopen(BINARY);
+    const char* binary = BINARY;
+    auto shared = Interface::Interface<CLuaShared*>(BINARY, "LUASHARED003");
     #endif
 
-    if (!lua_shared) {
-        std::cout << "[LJPatch] [ERROR] Couldn't initialize properly, couldn't find lua_shared." << std::endl;
-        return false;
-    }
-
-    lua_shared_interface = Framework::Interface<GarrysMod::Lua::ILuaShared*>(binary, GMOD_LUASHARED_INTERFACE);
-
-    if (!lua_shared_interface) {
-        std::cout << "[LJPatch] [ERROR] Couldn't initialize properly, couldn't find lua interface." << std::endl;
+    if (!shared) {
+        std::cout << "[ERROR] Interstellar couldn't initialize properly, couldn't find lua_shared/interface." << std::endl;
         return 0;
     }
 
-    size_t count = 0;
-    std::cout << "[LJPatch] Patching..." << std::endl;
-    for (const auto& entry : apis) {
-        void* target = Framework::n2p(lua_shared, entry.first.c_str());
-        if (target == nullptr) {
-            std::cout << "[LJPatch] [WARNING] Couldn't locate " << entry.first << "!" << std::endl;
-        } else if (!Framework::override(target, entry.second)) {
-            std::cout << "[LJPatch] [WARNING] Couldn't modify " << entry.first << "!" << std::endl;
-        } else {
-            count++;
-        }
+    current_shared = shared;
+    auto vtable = Interface::VTable(shared);
+    int errors = Interstellar::init(binary);
+
+    if (errors != 0) {
+        std::cout << "[ERROR] Interstellar couldn't initialize properly, code: " << std::to_string(errors) << std::endl;
+        return errors;
     }
-    std::cout << "[LJPatch] Restored: " << count << " / " << apis.size() << " APIs" << std::endl;
 
-    return true;
+    // I noticed that the beta builds have srcds in odd places, so this solves that
+    static const std::unordered_set<std::string> bin_variants = {
+        "bin", "linux32", "linux64", "win32", "win64"
+    };
+
+    std::filesystem::path path = Interstellar::FS::where();
+    if (path.filename().string() == "bin") {
+        path = path.parent_path();
+    }
+    else if (bin_variants.count(path.filename().string())
+        && path.parent_path().filename().string() == "bin") {
+        path = path.parent_path().parent_path();
+    }
+
+    Interstellar::FS::api(path.string());
+    Interstellar::Memory::api();
+    Interstellar::LXZ::api();
+    Interstellar::IOT::api();
+    Interstellar::Sodium::api();
+
+    #ifdef GMSV
+        CLuaInterface* lua_interface = shared->GetLuaInterface(GarrysMod::Lua::State::SERVER);
+        Interstellar::API::lua_State* L;
+        if (lua_interface) {
+            L = (Interstellar::API::lua_State*)lua_interface->GetState();
+            Interstellar::Tracker::listen(L, "server", true);
+        }
+        else {
+            lua_interface = shared->GetLuaInterface(GarrysMod::Lua::State::MENU);
+
+            if (!lua_interface) {
+                std::cout << "[ERROR] Interstellar couldn't initialize properly, couldn't find GMSV lua_State." << std::endl;
+                return 0;
+            }
+
+            L = (Interstellar::API::lua_State*)lua_interface->GetState();
+            Interstellar::Tracker::listen(L, "menu", true);
+        }
+
+        current_interface = lua_interface;
+        Interstellar::Reflection::push(L);
+        Interstellar::API::lua::pop(L);
+    #elif defined(GMCL)
+        CLuaInterface* lua_interface = shared->GetLuaInterface(GarrysMod::Lua::State::CLIENT);
+
+        if (!lua_interface) {
+            std::cout << "[ERROR] Interstellar couldn't initialize properly, couldn't find GMCL lua_State." << std::endl;
+            return 0;
+        }
+
+        current_interface = lua_interface;
+        Interstellar::API::lua_State* L = (Interstellar::API::lua_State*)lua_interface->GetState();
+        Interstellar::Tracker::listen(L, "client", true);
+        Interstellar::Reflection::push(L);
+        Interstellar::API::lua::pop(L);
+    #endif
+
+    Interstellar::Signal::add_error("entry_point", [](API::lua_State* L, std::string name, std::string identity, std::string error) {
+        std::string state_name = Tracker::get_name(L);
+        std::cout << "[" << state_name << "] [signal." << name << "." << identity << "] " << error << std::endl;
+    });
+
+    Interstellar::Reflection::Task::add_error("entry_point", [](API::lua_State* L, std::string error) {
+        std::string state_name = Tracker::get_name(L);
+        std::cout << "[" << state_name << "] [task] " << error << std::endl;
+    });
+
+    Interstellar::FS::add_error("entry_point", [](API::lua_State* L, std::string error) {
+        std::string state_name = Tracker::get_name(L);
+        std::cout << "[" << state_name << "] [fs] " << error << std::endl;
+    });
+
+    Interstellar::LXZ::add_error("entry_point", [](API::lua_State* L, std::string error) {
+        std::string state_name = Tracker::get_name(L);
+        std::cout << "[" << state_name << "] [lxz] " << error << std::endl;
+    });
+
+    Interstellar::IOT::add_error("entry_point", [](API::lua_State* L, std::string type, std::string error) {
+        std::string state_name = Tracker::get_name(L);
+        std::cout << "[" << state_name << "] [iot." << type << "] " << error << std::endl;
+    });
+    
+    Tracker::on_open("entry_point", on_opening);
+    Tracker::on_close("entry_point", on_closing);
+
+    // TODO: Fix lua interface creation later on...
+    //o_new_state = API::luaL::newstate;
+    //API::luaL::newstate = new_state;
+    //o_close_state = API::lua::close;
+    //API::lua::close = close_state;
+    
+    #ifndef GMCL
+        if (shared->GetLuaInterface(GarrysMod::Lua::State::MENU)) {
+            #ifdef _WIN32
+                DWORD oldProtect;
+                VirtualProtect(vtable, sizeof(void*) * 6, PAGE_EXECUTE_READWRITE, &oldProtect);
+            #elif __linux
+                size_t page_size = sysconf(_SC_PAGE_SIZE);
+                uintptr_t base = reinterpret_cast<uintptr_t>(vtable);
+                uintptr_t aligned_base = base & ~(page_size - 1);
+                mprotect(reinterpret_cast<void*>(aligned_base), page_size, PROT_READ | PROT_WRITE | PROT_EXEC);
+            #endif
+    
+            CreateLuaInterface_o = (CreateLuaInterface_fn)vtable[4];
+            vtable[4] = (void*)CreateLuaInterface_h;
+            CloseLuaInterface_o = (CloseLuaInterface_fn)vtable[5];
+            vtable[5] = (void*)CloseLuaInterface_h;
+
+            #ifdef _WIN32
+                DWORD __oldProtect;
+                VirtualProtect(vtable, sizeof(void*) * 6, oldProtect, &__oldProtect);
+            #elif __linux
+                mprotect(reinterpret_cast<void*>(aligned_base), page_size, PROT_READ | PROT_EXEC);
+            #endif
+        }
+    #endif
+
+    using namespace API;
+    lua::pushvalue(L, indexer::global);
+
+    // This is what allows some task scheduled or parallelism to exist
+    // I wish I didn't have to do it this way...
+    {
+        // timer method
+        lua::getfield(L, -1, "timer");
+        if (!lua::istable(L, -1)) {
+            lua::pop(L, 2);
+            std::cout << "[ERROR] Interstellar couldn't initialize properly, timer.Create is missing." << std::endl;
+            return 0;
+        }
+
+        lua::getfield(L, -1, "Create");
+        if (!lua::isfunction(L, -1)) {
+            lua::pop(L, 3);
+            std::cout << "[ERROR] Interstellar couldn't initialize properly, timer.Create is missing." << std::endl;
+            return 0;
+        }
+
+        lua::pushstring(L, "__interstellar");
+        lua::pushnumber(L, 0);
+        lua::pushnumber(L, 0);
+        lua::pushcfunction(L, runtime_async);
+        if (lua::tcall(L, 4, 0)) {
+            std::string err = lua::tocstring(L, -1);
+            lua::pop(L, 3);
+            std::cout << "[ERROR] Interstellar couldn't initialize properly, timer.Create failure:\n" << err << std::endl;
+            return 1;
+        }
+        lua::pop(L, 2);
+
+        // hook method
+        /*lua::getfield(L, -1, "hook");
+        if (!lua::istable(L, -1)) {
+            lua::pop(L, 2);
+            std::cout << "[ERROR] Interstellar couldn't initialize properly, hook.Add is missing." << std::endl;
+            return 1;
+        }
+
+        lua::getfield(L, -1, "Add");
+        if (!lua::isfunction(L, -1)) {
+            lua::pop(L, 3);
+            std::cout << "[ERROR] Interstellar couldn't initialize properly, hook.Add is missing." << std::endl;
+            return 1;
+        }
+
+        lua::pushstring(L, "Think");
+        lua::pushstring(L, "__interstellar");
+        lua::pushcfunction(L, runtime_dethreader);
+        if (lua::tcall(L, 3, 0)) {
+            std::string err = lua::tocstring(L, -1);
+            lua::pop(L, 3);
+            std::cout << "[ERROR] Interstellar couldn't initialize properly, hook.Add failure:\n" << err << std::endl;
+            return 1;
+        }
+        lua::pop(L, 2);*/
+    }
+
+    return 1;
 }
 
-//---------------------------------------------------------------------------------
-// Purpose: called when the plugin is unloaded (turned off)
-//---------------------------------------------------------------------------------
-void LJPatchPlugin::Unload(void)
-{
-    std::cout << "[LJPatch] Unloading..." << std::endl;
-    Framework::unload();
-    std::cout << "[LJPatch] Complete." << std::endl;
+int module_close() {
+    if (!opened) return 1;
+    opened = false;
+    
+    if (!current_shared) {
+        std::cout << "[ERROR] Interstellar couldn't destruct properly, couldn't find lua_shared/interface." << std::endl;
+        return 1;
+    }
+
+    auto vtable = Interface::VTable(current_shared);
+
+    if (CreateLuaInterface_o && CloseLuaInterface_o) {
+        #ifdef _WIN32
+            DWORD oldProtect;
+            VirtualProtect(vtable, sizeof(void*) * 6, PAGE_EXECUTE_READWRITE, &oldProtect);
+        #elif __linux
+            size_t page_size = sysconf(_SC_PAGE_SIZE);
+            uintptr_t base = reinterpret_cast<uintptr_t>(vtable);
+            uintptr_t aligned_base = base & ~(page_size - 1);
+            mprotect(reinterpret_cast<void*>(aligned_base), page_size, PROT_READ | PROT_WRITE | PROT_EXEC);
+        #endif
+
+        vtable[4] = (void*)CreateLuaInterface_o;
+        vtable[5] = (void*)CloseLuaInterface_o;
+
+        #ifdef _WIN32
+            DWORD __oldProtect;
+            VirtualProtect(vtable, sizeof(void*) * 6, oldProtect, &__oldProtect);
+        #elif __linux
+            mprotect(reinterpret_cast<void*>(aligned_base), page_size, PROT_READ | PROT_EXEC);
+        #endif
+    }
+
+    auto list = Tracker::get_states();
+    for (auto& state : list) {
+        bool is_created = !Tracker::is_internal(state.second);
+        Tracker::pre_remove(state.second);
+        if (is_created) Reflection::close(state.second);
+        Tracker::post_remove(state.second);
+    }
+
+    return 1;
 }
 
-//---------------------------------------------------------------------------------
-// Purpose: called when the plugin is paused (i.e should stop running but isn't unloaded)
-//---------------------------------------------------------------------------------
-void LJPatchPlugin::Pause(void)
-{
+// Used for testing with injections
+#ifdef _WIN32
+BOOL APIENTRY DllMain(HMODULE module, DWORD reason, LPVOID reserved) {
+    DisableThreadLibraryCalls(module);
+
+    if (reason == DLL_PROCESS_ATTACH) {
+        module_open();
+        return 1;
+    }
+    else if (reason == DLL_PROCESS_DETACH) {
+        module_close();
+        return 1;
+    }
+
+    return 0;
+}
+#else
+__attribute__((constructor))
+void onLibraryLoad() {
+    module_open();
 }
 
-//---------------------------------------------------------------------------------
-// Purpose: called when the plugin is unpaused (i.e should start executing again)
-//---------------------------------------------------------------------------------
-void LJPatchPlugin::UnPause(void)
-{
+__attribute__((destructor))
+void onLibraryUnload() {
+    module_close();
 }
+#endif
 
-//---------------------------------------------------------------------------------
-// Purpose: the name of this plugin, returned in "plugin_print" command
-//---------------------------------------------------------------------------------
-const char* LJPatchPlugin::GetPluginDescription(void)
-{
-    return "LJPatch";
-}
+#ifdef _WIN32
+    #define GMOD_DLL_EXPORT extern "C" __declspec( dllexport )
+#else
+    #define GMOD_DLL_EXPORT extern "C" __attribute__((visibility("default")))
+#endif
 
-//---------------------------------------------------------------------------------
-// Purpose: called on level start
-//---------------------------------------------------------------------------------
-void LJPatchPlugin::LevelInit(char const* pMapName)
-{
+GMOD_DLL_EXPORT int gmod13_open( [[maybe_unused]] API::lua_State* L ) {
+    module_open();
+    return 0;
 }
-
-//---------------------------------------------------------------------------------
-// Purpose: called on level start, when the server is ready to accept client connections
-//		edictCount is the number of entities in the level, clientMax is the max client count
-//---------------------------------------------------------------------------------
-void LJPatchPlugin::ServerActivate(edict_t* pEdictList, int edictCount, int clientMax)
-{
+GMOD_DLL_EXPORT int gmod13_close( [[maybe_unused]] API::lua_State* L ) {
+    module_close();
+    return 0;
 }
-
-//---------------------------------------------------------------------------------
-// Purpose: called once per server frame, do recurring work here (like checking for timeouts)
-//---------------------------------------------------------------------------------
-void LJPatchPlugin::GameFrame(bool simulating)
-{
-}
-
-//---------------------------------------------------------------------------------
-// Purpose: called on level end (as the server is shutting down or going to a new map)
-//---------------------------------------------------------------------------------
-void LJPatchPlugin::LevelShutdown(void) // !!!!this can get called multiple times per map change
-{
-}
-
-//---------------------------------------------------------------------------------
-// Purpose: called when a client spawns into a server (i.e as they begin to play)
-//---------------------------------------------------------------------------------
-void LJPatchPlugin::ClientActive(edict_t* pEntity)
-{
-}
-
-//---------------------------------------------------------------------------------
-// Purpose: called when a client leaves a server (or is timed out)
-//---------------------------------------------------------------------------------
-void LJPatchPlugin::ClientDisconnect(edict_t* pEntity)
-{
-}
-
-//---------------------------------------------------------------------------------
-// Purpose: called on 
-//---------------------------------------------------------------------------------
-void LJPatchPlugin::ClientPutInServer(edict_t* pEntity, char const* playername)
-{
-}
-
-//---------------------------------------------------------------------------------
-// Purpose: called on level start
-//---------------------------------------------------------------------------------
-void LJPatchPlugin::SetCommandClient(int index)
-{
-}
-
-//---------------------------------------------------------------------------------
-// Purpose: called on level start
-//---------------------------------------------------------------------------------
-void LJPatchPlugin::ClientSettingsChanged(edict_t* pEdict)
-{
-}
-
-//---------------------------------------------------------------------------------
-// Purpose: called when a client joins a server
-//---------------------------------------------------------------------------------
-PLUGIN_RESULT LJPatchPlugin::ClientConnect(bool* bAllowConnect, edict_t* pEntity, const char* pszName, const char* pszAddress, char* reject, int maxrejectlen)
-{
-    return PLUGIN_CONTINUE;
-}
-
-//---------------------------------------------------------------------------------
-// Purpose: called when a client types in a command (only a subset of commands however, not CON_COMMAND's)
-//---------------------------------------------------------------------------------
-PLUGIN_RESULT LJPatchPlugin::ClientCommand(edict_t* pEntity, const CCommand& args)
-{
-    return PLUGIN_CONTINUE;
-}
-
-//---------------------------------------------------------------------------------
-// Purpose: called when a client is authenticated
-//---------------------------------------------------------------------------------
-PLUGIN_RESULT LJPatchPlugin::NetworkIDValidated(const char* pszUserName, const char* pszNetworkID)
-{
-    return PLUGIN_CONTINUE;
-}
-
-//---------------------------------------------------------------------------------
-// Purpose: called when a cvar value query is finished
-//---------------------------------------------------------------------------------
-void LJPatchPlugin::OnQueryCvarValueFinished(QueryCvarCookie_t iCookie, edict_t* pPlayerEntity, EQueryCvarValueStatus eStatus, const char* pCvarName, const char* pCvarValue)
-{
-}
-void LJPatchPlugin::OnEdictAllocated(edict_t* edict)
-{
-}
-void LJPatchPlugin::OnEdictFreed(const edict_t* edict)
-{
-}
-
-LJPatchPlugin g_LJPatchPlugin;
-EXPOSE_SINGLE_INTERFACE_GLOBALVAR(LJPatchPlugin, IServerPluginCallbacks, INTERFACEVERSION_ISERVERPLUGINCALLBACKS, g_LJPatchPlugin);
