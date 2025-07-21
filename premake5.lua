@@ -3,6 +3,11 @@ workspace "Interstellar"
     platforms { "x86", "x64" }
     location "build"
 
+local vcpkg_root = os.getenv("VCPKG_ROOT") or "../../vcpkg"
+local function vcpkg_path(triplet, kind)
+    return path.join(vcpkg_root, "installed", triplet, kind)
+end
+
 function project_generator(realm)
     project ("Interstellar_" .. realm)
         kind "SharedLib"
@@ -38,6 +43,7 @@ function project_generator(realm)
 
         filter "system:linux"
             staticruntime "On"
+            targetprefix ""
             links { 
                 "ixwebsocket",
                 "sodium",
@@ -55,19 +61,16 @@ function project_generator(realm)
                 "pthread"
             }
 
-            -- TODO: don't use os.getenv n stuff, you can vcpkg integrate
             filter { "system:linux", "platforms:x86" }
-                includedirs { (os.getenv("HOME") or "") .. "/vcpkg/installed/x86-linux/include" }
-                libdirs { (os.getenv("HOME") or "") .. "/vcpkg/installed/x86-linux/lib" }
+                includedirs { vcpkg_path("x86-linux", "include") }
+                libdirs { vcpkg_path("x86-linux", "lib") }
                 targetname (realm .. "_interstellar_linux")
-                targetprefix ""
 
             filter { "system:linux", "platforms:x64" }
                 pic "On"
-                includedirs { (os.getenv("HOME") or "") .. "/vcpkg/installed/x64-linux/include" }
-                libdirs { (os.getenv("HOME") or "") .. "/vcpkg/installed/x64-linux/lib" }
+                includedirs { vcpkg_path("x64-linux", "include") }
+                libdirs { vcpkg_path("x64-linux", "lib") }
                 targetname (realm .. "_interstellar_linux64")
-                targetprefix ""
 
         filter "platforms:x86"
             architecture "x86"
