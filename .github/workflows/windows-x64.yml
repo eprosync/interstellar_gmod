@@ -51,8 +51,9 @@ jobs:
           $content = Get-Content repository/interstellar/vcpkg.conf | Out-String
           $packages = $content.Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)
           foreach ($package in $packages) {
-            Write-Host "Installing package: $package"
-            .\vcpkg\vcpkg install $package --triplet x64-windows-static
+            $trim = $package.Trim()
+            Write-Host "Installing package: '$trim'"
+            .\vcpkg\vcpkg install $trim --triplet x64-windows-static
           }
         env:
           VCPKG_DEFAULT_TRIPLET: x64-windows-static
