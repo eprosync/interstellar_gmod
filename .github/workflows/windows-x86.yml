@@ -48,7 +48,8 @@ jobs:
       - name: Install dependencies
         shell: pwsh
         run: |
-          $packages = Get-Content repository/interstellar/vcpkg.conf | Where-Object { $_ -ne "" }
+          $content = Get-Content repository/interstellar/vcpkg.conf | Out-String
+          $packages = $content.Split(" ", [System.StringSplitOptions]::RemoveEmptyEntries)
           foreach ($package in $packages) {
             Write-Host "Installing package: $package"
             .\vcpkg\vcpkg install $package --triplet x64-windows-static
