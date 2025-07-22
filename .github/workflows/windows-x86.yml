@@ -1,0 +1,87 @@
+name: Windows x64
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+
+jobs:
+  build-debug:
+    name: Build Debug
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: repository
+          submodules: recursive
+
+      - name: Clean submodules (Local)
+        shell: pwsh
+        run: |
+          cd repository
+          git submodule foreach --recursive git reset --hard
+          git submodule foreach --recursive git clean -fdx
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+        
+      - name: Clone vcpkg
+        shell: pwsh
+        run: |
+          if (-not (Test-Path "vcpkg")) {
+            git clone https://github.com/microsoft/vcpkg.git
+          }
+
+      - name: Bootstrap vcpkg
+        shell: pwsh
+        run: |
+          .\vcpkg\bootstrap-vcpkg.bat
+
+      - name: Integrate vcpkg
+        shell: pwsh
+        run: .\vcpkg\vcpkg integrate install
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          $packages = Get-Content repository/interstellar/vcpkg.conf | Where-Object { $_ -ne "" }
+          .\vcpkg\vcpkg install $packages --triplet x64-windows-static
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-windows-static
+
+      - name: Install Premake5
+        shell: pwsh
+        run: |
+          if (-Not (Test-Path premake-core)) {
+            git clone --depth=1 https://github.com/premake/premake-core.git
+          }
+          cd premake-core
+          .\Bootstrap.bat vs2022
+          Move-Item .\bin\release\premake5.exe ..\repository\
+          cd ..
+
+      - name: Initialize Premake
+        shell: pwsh
+        run: |
+          cd repository
+          .\premake5.exe vs2022
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+
+      - name: Build
+        shell: pwsh
+        run: |
+          cd repository\build
+          msbuild interstellar.sln /p:Configuration=Release /p:Platform=x64
+          cd ../..
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug_x64_windows
+          path: repository\bin\x64\Debug\*
+          if-no-files-found: warn
