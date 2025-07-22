@@ -1,0 +1,151 @@
+name: Linux x64
+
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+
+jobs:
+  build-debug:
+    name: Build Debug
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: repository
+          submodules: recursive
+
+      - name: Clean submodules (Local)
+        run: |
+          cd repository
+          # Clean untracked files inside submodules
+          git submodule foreach --recursive git reset --hard
+          git submodule foreach --recursive git clean -fdx
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
+
+      - name: Install packages
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt update
+          sudo apt install -y build-essential zip unzip curl cmake pkg-config git gcc-multilib g++-multilib
+          sudo apt-get install -y autoconf libtool libcpprest-dev uuid-dev
+          sudo apt install libcpprest-dev:i386 || true
+
+      - name: Clone vcpkg
+        run: git clone https://github.com/microsoft/vcpkg.git || true
+
+      - name: Bootstrap vcpkg
+        run: ./vcpkg/bootstrap-vcpkg.sh
+
+      - name: Integrate vcpkg
+        run: ./vcpkg/vcpkg integrate install
+
+      - name: Install dependencies
+        run: |
+          PACKAGES=$(cat repository/interstellar/vcpkg.conf)
+          ./vcpkg/vcpkg install $PACKAGES --triplet=x64-linux
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: Install Premake5
+        run: |
+          git clone --depth=1 https://github.com/premake/premake-core.git || true
+          cd premake-core
+          make -f Bootstrap.mak linux
+          mv ./bin/release/premake5 ../repository
+          cd ..
+
+      - name: Initialize Premake
+        run: |
+          cd repository
+          ./premake5 gmake
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+
+      - name: Build
+        run: |
+          cd repository/build
+          make config=debug_x64
+          cd ../..
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug_x64_linux
+          path: repository/bin/x64/Debug/*
+          if-no-files-found: warn
+
+  build-release:
+    name: Build Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          path: repository
+          submodules: recursive
+
+      - name: Clean submodules (Local)
+        run: |
+          cd repository
+          # Clean untracked files inside submodules
+          git submodule foreach --recursive git reset --hard
+          git submodule foreach --recursive git clean -fdx
+          git submodule sync --recursive
+          git submodule update --init --force --recursive
+
+      - name: Install packages
+        run: |
+          sudo dpkg --add-architecture i386
+          sudo apt update
+          sudo apt install -y build-essential zip unzip curl cmake pkg-config git gcc-multilib g++-multilib
+          sudo apt-get install -y autoconf libtool libcpprest-dev uuid-dev
+          sudo apt install libcpprest-dev:i386 || true
+
+      - name: Clone vcpkg
+        run: git clone https://github.com/microsoft/vcpkg.git || true
+
+      - name: Bootstrap vcpkg
+        run: ./vcpkg/bootstrap-vcpkg.sh
+
+      - name: Integrate vcpkg
+        run: ./vcpkg/vcpkg integrate install
+
+      - name: Install dependencies
+        run: |
+          PACKAGES=$(cat repository/interstellar/vcpkg.conf)
+          ./vcpkg/vcpkg install $PACKAGES --triplet=x64-linux
+        env:
+          VCPKG_DEFAULT_TRIPLET: x64-linux
+
+      - name: Install Premake5
+        run: |
+          git clone --depth=1 https://github.com/premake/premake-core.git || true
+          cd premake-core
+          make -f Bootstrap.mak linux
+          mv ./bin/release/premake5 ../repository
+          cd ..
+
+      - name: Initialize Premake
+        run: |
+          cd repository
+          ./premake5 gmake
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}/vcpkg
+
+      - name: Build Release
+        run: |
+          cd repository/build
+          make config=release_x64
+          cd ../..
+
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release_x64_linux
+          path: repository/bin/x64/Release/*
+          if-no-files-found: warn
