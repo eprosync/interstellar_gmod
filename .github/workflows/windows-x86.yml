@@ -49,7 +49,10 @@ jobs:
         shell: pwsh
         run: |
           $packages = Get-Content repository/interstellar/vcpkg.conf | Where-Object { $_ -ne "" }
-          .\vcpkg\vcpkg install @($packages) --triplet x64-windows-static
+          foreach ($package in $packages) {
+            Write-Host "Installing package: $package"
+            .\vcpkg\vcpkg install $package --triplet x64-windows-static
+          }
         env:
           VCPKG_DEFAULT_TRIPLET: x64-windows-static
 
