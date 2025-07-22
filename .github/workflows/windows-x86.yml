@@ -1,4 +1,4 @@
-name: Windows x64
+name: Windows x86
 
 on:
   push:
@@ -53,10 +53,10 @@ jobs:
           foreach ($package in $packages) {
             $trim = $package.Trim()
             Write-Host "Installing package: '$trim'"
-            .\vcpkg\vcpkg install $trim --triplet x64-windows-static
+            .\vcpkg\vcpkg install $trim --triplet x86-windows-static
           }
         env:
-          VCPKG_DEFAULT_TRIPLET: x64-windows-static
+          VCPKG_DEFAULT_TRIPLET: x86-windows-static
 
       - name: Install Premake5
         shell: pwsh
@@ -82,14 +82,14 @@ jobs:
         shell: pwsh
         run: |
           cd repository\build
-          msbuild interstellar.sln /p:Configuration=Debug /p:Platform=x64
+          msbuild interstellar.sln /p:Configuration=Debug /p:Platform=Win32
           cd ..\..
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: debug_x64_windows
-          path: repository\bin\x64\Debug\*
+          name: debug_x86_windows
+          path: repository\bin\x86\Debug\*
           if-no-files-found: warn
   
   build-release:
@@ -139,10 +139,10 @@ jobs:
           foreach ($package in $packages) {
             $trim = $package.Trim()
             Write-Host "Installing package: '$trim'"
-            .\vcpkg\vcpkg install $trim --triplet x64-windows-static
+            .\vcpkg\vcpkg install $trim --triplet x86-windows-static
           }
         env:
-          VCPKG_DEFAULT_TRIPLET: x64-windows-static
+          VCPKG_DEFAULT_TRIPLET: x86-windows-static
 
       - name: Install Premake5
         shell: pwsh
@@ -168,12 +168,12 @@ jobs:
         shell: pwsh
         run: |
           cd repository\build
-          msbuild interstellar.sln /p:Configuration=Release /p:Platform=x64
+          msbuild interstellar.sln /p:Configuration=Release /p:Platform=Win32
           cd ..\..
 
       - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: release_x64_windows
-          path: repository\bin\x64\Release\*
+          name: release_x86_windows
+          path: repository\bin\x86\Release\*
           if-no-files-found: warn
