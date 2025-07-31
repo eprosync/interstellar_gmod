@@ -3,7 +3,7 @@ workspace "Interstellar"
     platforms { "x86", "x64" }
     location "build"
 
-local vcpkg_root = os.getenv("VCPKG_ROOT") or "../../vcpkg"
+local vcpkg_root = os.getenv("VCPKG_ROOT") or "../vcpkg"
 local function vcpkg_path(triplet, kind)
     return path.join(vcpkg_root, "installed", triplet, kind)
 end
