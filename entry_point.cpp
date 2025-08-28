@@ -298,8 +298,6 @@ int module_open() {
         }
 
         current_interface = lua_interface;
-        Interstellar::Reflection::push(L);
-        Interstellar::API::lua::pop(L);
     #elif defined(GMCL)
         CLuaInterface* lua_interface = shared->GetLuaInterface(GarrysMod::Lua::State::CLIENT);
 
@@ -311,8 +309,6 @@ int module_open() {
         current_interface = lua_interface;
         Interstellar::API::lua_State* L = (Interstellar::API::lua_State*)lua_interface->GetState();
         Interstellar::Tracker::listen(L, "client", true);
-        Interstellar::Reflection::push(L);
-        Interstellar::API::lua::pop(L);
     #endif
 
     Interstellar::Signal::add_error("entry_point", [](API::lua_State* L, std::string name, std::string identity, std::string error) {
