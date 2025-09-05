@@ -269,7 +269,10 @@ int module_open() {
     Interstellar::OS::api();
 
     // Extensions
-    Interstellar::FS::api(path.string());
+    if (Interstellar::OS::ARGV::exists("fs")) {
+        Interstellar::FS::api(path.string());
+        std::cout << "[WARNING] Interstellar has fs.* enabled, you have been warned." << std::endl;
+    }
     if (Interstellar::OS::ARGV::exists("memory")) {
         Interstellar::Memory::api();
         std::cout << "[WARNING] Interstellar has memory.* enabled, you have been warned." << std::endl;
