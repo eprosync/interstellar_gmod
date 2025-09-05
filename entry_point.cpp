@@ -266,7 +266,10 @@ int module_open() {
     Interstellar::Debug::api();
     Interstellar::Table::api();
     Interstellar::Math::api();
-    Interstellar::OS::api();
+    if (Interstellar::OS::ARGV::exists("os")) {
+        Interstellar::OS::api();
+        std::cout << "[WARNING] Interstellar has os.* enabled, you have been warned." << std::endl;
+    }
 
     // Extensions
     if (Interstellar::OS::ARGV::exists("fs")) {
