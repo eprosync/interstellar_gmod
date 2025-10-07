@@ -85,6 +85,30 @@ typedef GarrysMod::Lua::lua_State GState;
 CLuaShared* current_shared;
 CLuaInterface* current_interface;
 
+int deferred_state_execute = -1;
+#ifdef __linux
+typedef CLuaInterface* (*RunStringEx_fn)(CLuaInterface* self, const char* fileName, const char* path, const char* stringToRun, bool run, bool showErrors, bool dontPushErrors, bool noReturns);
+RunStringEx_fn RunStringEx_o;
+bool RunStringEx_h(CLuaInterface* self, const char* fileName, const char* path, const char* stringToRun, bool run, bool showErrors, bool dontPushErrors, bool noReturns)
+#else
+typedef CLuaInterface* (__thiscall* RunStringEx_fn)(CLuaInterface* self, const char* fileName, const char* path, const char* stringToRun, bool run, bool showErrors, bool dontPushErrors, bool noReturns);
+RunStringEx_fn RunStringEx_o;
+bool __fastcall RunStringEx_h(CLuaInterface* self, const char* fileName, const char* path, const char* stringToRun, bool run, bool showErrors, bool dontPushErrors, bool noReturns)
+#endif
+{
+    // Need to hook onto this since CreateLuaInterface is too early for openlibs.
+    // I would have just hooked into luaL_loadbufferx, but this is just easier since its a vtable.
+
+    if (deferred_state_execute == -1 || deferred_state_execute != GarrysMod::Lua::State::CLIENT)
+        return RunStringEx_o(self, fileName, path, stringToRun, run, showErrors, dontPushErrors, noReturns);
+
+    API::lua_State* L = (API::lua_State*)self->GetState();
+    Tracker::listen(L, "client", true, (API::lua_State*)current_interface->GetState());
+    deferred_state_execute = -1;
+
+    return RunStringEx_o(self, fileName, path, stringToRun, run, showErrors, dontPushErrors, noReturns);
+}
+
 #ifdef __linux
 typedef CLuaInterface* (*CreateLuaInterface_fn)(CLuaShared* self, unsigned char type, bool renew);
 CreateLuaInterface_fn CreateLuaInterface_o;
@@ -96,26 +120,38 @@ CLuaInterface* __fastcall CreateLuaInterface_h(CLuaShared* self, unsigned char t
 #endif
 {
     CLuaInterface* state = CreateLuaInterface_o(self, type, renew);
-    API::lua_State* L = (API::lua_State*)state->GetState();
-
-    switch (type)
-    {
-        case GarrysMod::Lua::State::CLIENT:
-            Tracker::listen(L, "client", true);
-            break;
-        case GarrysMod::Lua::State::SERVER:
-            Tracker::listen(L, "server", true);
-            break;
-        case GarrysMod::Lua::State::MENU:
-            Tracker::listen(L, "menu", true);
-            break;
-    };
 
     // Do note:
     // At this stage lua hasn't correctly initialized (missing some openlibs and stuff)
     // So you can't just grab things like the global table just yet, it isn't ready till luaopen_base is called.
     // If you need the API in the client-state, but you are in menu-state, just do L:api() L:pop(), this will create everything.
     // Be warned, exposing API's onto a state thats not entirely under your control leaves you open to high security risks.
+
+    deferred_state_execute = type;
+ 
+    if (type == GarrysMod::Lua::State::CLIENT) {
+        auto vtable = Interface::VTable(state);
+
+        #ifdef _WIN32
+            DWORD oldProtect;
+            VirtualProtect(vtable, sizeof(void*) * 6, PAGE_EXECUTE_READWRITE, &oldProtect);
+        #elif __linux
+            size_t page_size = sysconf(_SC_PAGE_SIZE);
+            uintptr_t base = reinterpret_cast<uintptr_t>(vtable);
+            uintptr_t aligned_base = base & ~(page_size - 1);
+            mprotect(reinterpret_cast<void*>(aligned_base), page_size, PROT_READ | PROT_WRITE | PROT_EXEC);
+        #endif
+        
+        RunStringEx_o = (RunStringEx_fn)vtable[111];
+        vtable[111] = (void*)RunStringEx_h;
+
+        #ifdef _WIN32
+            DWORD __oldProtect;
+            VirtualProtect(vtable, sizeof(void*) * 6, oldProtect, &__oldProtect);
+        #elif __linux
+            mprotect(reinterpret_cast<void*>(aligned_base), page_size, PROT_READ | PROT_EXEC);
+        #endif
+    }
 
     return state;
 }
@@ -132,6 +168,30 @@ void __fastcall CloseLuaInterface_h(CLuaShared* self, CLuaInterface* state)
 {
     if (current_interface == state)
         return CloseLuaInterface_o(self, state);
+
+    if (state->IsClient() && RunStringEx_o) {
+        auto vtable = Interface::VTable(state);
+
+        #ifdef _WIN32
+            DWORD oldProtect;
+            VirtualProtect(vtable, sizeof(void*) * 6, PAGE_EXECUTE_READWRITE, &oldProtect);
+        #elif __linux
+            size_t page_size = sysconf(_SC_PAGE_SIZE);
+            uintptr_t base = reinterpret_cast<uintptr_t>(vtable);
+            uintptr_t aligned_base = base & ~(page_size - 1);
+            mprotect(reinterpret_cast<void*>(aligned_base), page_size, PROT_READ | PROT_WRITE | PROT_EXEC);
+        #endif
+
+        vtable[111] = (void*)RunStringEx_o;
+
+        #ifdef _WIN32
+            DWORD __oldProtect;
+            VirtualProtect(vtable, sizeof(void*) * 6, oldProtect, &__oldProtect);
+        #elif __linux
+            mprotect(reinterpret_cast<void*>(aligned_base), page_size, PROT_READ | PROT_EXEC);
+        #endif
+    }
+
     API::lua_State* L = (API::lua_State*)state->GetState();
     Tracker::pre_remove(L);
     CloseLuaInterface_o(self, state);
@@ -259,6 +319,12 @@ int module_open() {
         Interstellar::Reflection::api();
         std::cout << "[WARNING] Interstellar has reflection.* enabled, you have been warned." << std::endl;
     }
+    else if (shared->GetLuaInterface(GarrysMod::Lua::State::MENU)) {
+        // MENU should be fine to have this in, but you are responsible for what you use this for on servers.
+        // Using this to execute malicious code onto a server will put you at risk.
+        // Even though I think you should have full control over your client-state, I can't blame them.
+        Interstellar::Reflection::api();
+    }
     Interstellar::Signal::api();
     Interstellar::Coroutine::api();
     Interstellar::Buffer::api();
@@ -352,7 +418,7 @@ int module_open() {
     //API::lua::close = close_state;
     
     #ifndef GMCL
-        if (shared->GetLuaInterface(GarrysMod::Lua::State::MENU)) {
+        if (lua_interface->IsMenu()) {
             #ifdef _WIN32
                 DWORD oldProtect;
                 VirtualProtect(vtable, sizeof(void*) * 6, PAGE_EXECUTE_READWRITE, &oldProtect);
@@ -449,9 +515,9 @@ int module_close() {
         return 1;
     }
 
-    auto vtable = Interface::VTable(current_shared);
-
     if (CreateLuaInterface_o && CloseLuaInterface_o) {
+        auto vtable = Interface::VTable(current_shared);
+
         #ifdef _WIN32
             DWORD oldProtect;
             VirtualProtect(vtable, sizeof(void*) * 6, PAGE_EXECUTE_READWRITE, &oldProtect);
@@ -475,9 +541,7 @@ int module_close() {
 
     auto list = Tracker::get_states();
     for (auto& state : list) {
-        bool is_created = !Tracker::is_internal(state.second);
         Tracker::pre_remove(state.second);
-        if (is_created) Reflection::close(state.second);
         Tracker::post_remove(state.second);
     }
 
